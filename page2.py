@@ -10,18 +10,31 @@ from langchain_core.output_parsers.string import StrOutputParser
 import os
 
 # Configuração da página
-st.set_page_config(layout="wide", page_title="Dashboard Finanças")
+st.set_page_config(layout="wide", page_title="Dashboard Finanças Pessoais")
 
 # Título do Dashboard
-st.title("📊 Dashboard de Finanças")
+st.title("📊 Dashboard de Finanças Pessoais")
+
+# Função para obter a API Key de forma segura
+def get_openai_key():
+    """Obtém a API Key do OpenAI dos secrets do Streamlit"""
+    try:
+        # Tenta pegar do secrets.toml (produção)
+        if hasattr(st, 'secrets') and 'openai' in st.secrets and 'api_key' in st.secrets.openai:
+            return st.secrets.openai.api_key
+        # Fallback para variável de ambiente (desenvolvimento)
+        elif os.getenv("OPENAI_API_KEY"):
+            return os.getenv("OPENAI_API_KEY")
+        else:
+            return None
+    except Exception as e:
+        st.error(f"Erro ao carregar configurações: {e}")
+        return None
 
 # Função para processar arquivo OFX
 def processar_ofx(uploaded_file):
     try:
-        # Ler o conteúdo do arquivo
         content = uploaded_file.getvalue().decode('ISO-8859-1')
-        
-        # Processar OFX
         ofx_file = io.StringIO(content)
         ofx = ofxparse.OfxParser.parse(ofx_file)
         
@@ -41,15 +54,19 @@ def processar_ofx(uploaded_file):
         st.error(f"Erro ao processar arquivo OFX: {e}")
         return None
 
-# Função para categorizar transações
-def categorizar_transacoes(df, openai_api_key):
+# Função para categorizar transações (agora sem pedir API key)
+def categorizar_transacoes(df):
     try:
+        # Obter API key automaticamente
+        openai_api_key = get_openai_key()
+        
+        if not openai_api_key:
+            st.error("❌ API Key do OpenAI não configurada. Verifique o arquivo secrets.toml")
+            return None
+
         template = """
         Você é um analista de dados, trabalhando em um projeto de limpeza de dados.
-        Seu trabalho é escolher uma categoria adequada para cada lançamento financeiro
-        que vou te enviar.
-
-        Todos são transações financeiras de uma pessoa física.
+        Seu trabalho é escolher uma categoria adequada para cada lançamento financeiro.
 
         Escolha uma dentre as seguintes categorias:
         - Alimentação
@@ -74,18 +91,29 @@ def categorizar_transacoes(df, openai_api_key):
 
         prompt = PromptTemplate.from_template(template=template)
         
-        # Configurar o modelo
+        # Configurar o modelo com parâmetros do secrets (se disponíveis)
+        model_name = "gpt-3.5-turbo"
+        temperature = 0.3
+        
+        try:
+            if hasattr(st, 'secrets') and 'config' in st.secrets:
+                if 'model' in st.secrets.config:
+                    model_name = st.secrets.config.model
+                if 'temperature' in st.secrets.config:
+                    temperature = st.secrets.config.temperature
+        except:
+            pass  # Usa valores padrão se não encontrar config
+        
         chat = ChatOpenAI(
-            model="gpt-4",
-            temperature=0.7,
+            model=model_name,
+            temperature=temperature,
             openai_api_key=openai_api_key
         )
         
         chain = prompt | chat | StrOutputParser()
         
-        # Categorizar em lotes para melhor performance
+        # Categorizar transações
         st.info("Categorizando transações com IA...")
-        latest_iteration = st.empty()
         progress_bar = st.progress(0)
         
         categorias = []
@@ -95,7 +123,6 @@ def categorizar_transacoes(df, openai_api_key):
             batch = list(df["Descrição"].values[i:i+batch_size])
             batch_categorias = chain.batch(batch)
             categorias.extend(batch_categorias)
-            latest_iteration.text(f'Iteration {i+1}') 
             progress_bar.progress(min((i + batch_size) / len(df), 1.0))
         
         df["Categoria"] = categorias
@@ -107,7 +134,7 @@ def categorizar_transacoes(df, openai_api_key):
         st.error(f"Erro na categorização: {e}")
         return None
 
-# Sidebar para upload e configuração
+# Sidebar simplificada (sem input de API key)
 st.sidebar.header("📁 Configurações")
 
 # Upload do arquivo OFX
@@ -117,49 +144,39 @@ uploaded_file = st.sidebar.file_uploader(
     help="Selecione seu arquivo de extrato bancário no formato OFX"
 )
 
-# Input para API Key
-api_key_source = st.sidebar.radio(
-    "Fonte da API Key:",
-    ["Inserir manualmente", "Variável de ambiente"]
-)
-
-openai_api_key = None
-
-if api_key_source == "Inserir manualmente":
-    openai_api_key = st.sidebar.text_input(
-        "OpenAI API Key:", 
-        type="password",
-        help="Sua chave da API OpenAI. Não será salva."
-    )
+# Verificar se a API Key está configurada
+openai_api_key = get_openai_key()
+if not openai_api_key:
+    st.sidebar.error("⚠️ API Key não configurada")
+    st.sidebar.info("""
+    Configure sua API Key no Streamlit Cloud:
+    1. Acesse app.streamlit.io
+    2. Seu app → Settings → Secrets
+    3. Cole:
+    ```toml
+    [openai]
+    api_key = "sua-chave-aqui"
+    ```
+    """)
 else:
-    openai_api_key = os.getenv("OPENAI_API_KEY")
-    if not openai_api_key:
-        st.sidebar.warning("Variável de ambiente OPENAI_API_KEY não encontrada!")
-    else:
-        st.sidebar.success("API Key carregada do ambiente")
+    st.sidebar.success("✅ API Key configurada")
 
-# Processar dados apenas se temos arquivo e API key
+# Processar dados apenas se temos arquivo
 if uploaded_file is not None and openai_api_key:
-    # Processar OFX
     with st.spinner("Processando arquivo OFX..."):
         df = processar_ofx(uploaded_file)
     
     if df is not None:
-        # Categorizar transações
-        df = categorizar_transacoes(df, openai_api_key)
+        df = categorizar_transacoes(df)
         
         if df is not None:
             # Preparar dados para dashboard
             df["Mês"] = df["Data"].apply(lambda x: f"{x.year}-{x.month:02d}")
-            
-            # Separar receitas e despesas
             df["Tipo"] = df["Valor"].apply(lambda x: "Receita" if x > 0 else "Despesa")
             
-            # Para análise de gastos, vamos usar apenas despesas (valores negativos)
             df_despesas = df[df["Valor"] < 0].copy()
             df_despesas["Valor_Absoluto"] = df_despesas["Valor"].abs()
             
-            # Armazenar na sessão para uso nos filtros
             st.session_state.df_processed = df
             st.session_state.df_despesas = df_despesas
             
