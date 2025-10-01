@@ -10,8 +10,9 @@ venv\Scripts\activate  # Windows
 # Instalar dependências
 pip install -r requirements.txt
 ```
-## Para executar o projeto:
-## Criar ambiente virtual (opcional mas recomendado)
+## Para executar o projeto localmente:
 ```bash
 streamlit run app.py
 ```
+## Versão do aplicativo online via Streamlit
+Utilize este link: [Automações Streamlit](https://apptest-automationtestedash.streamlit.app)
